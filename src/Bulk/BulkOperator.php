@@ -70,14 +70,26 @@ abstract class BulkOperator
     private int $affectedRows = 0;
 
     /**
+     * Indicates whether the class is in debug mode.
+     */
+    private bool $debug;
+
+    /**
+     * Stores the SQL queries when in debug mode.
+     */
+    private array $debugQueries = [];
+
+    /**
      * @param \PDO     $pdo                The PDO connection.
      * @param string   $table              The name of the table.
      * @param string[] $fields             The name of the relevant fields.
      * @param int      $operationsPerQuery The number of operations to process in a single query.
+     * @param bool     $debug              If true, no writes will be made to the database, 
+     *                                     and the proposed SQL can be obtained using getDebugQueries()
      *
      * @throws \InvalidArgumentException
      */
-    public function __construct(\PDO $pdo, string $table, array $fields, int $operationsPerQuery = 100)
+    public function __construct(\PDO $pdo, string $table, array $fields, int $operationsPerQuery = 100, bool $debug = false)
     {
         if ($operationsPerQuery < 1) {
             throw new \InvalidArgumentException('The number of operations per query must be 1 or more.');
@@ -93,8 +105,8 @@ abstract class BulkOperator
         $this->table     = $table;
         $this->fields    = $fields;
         $this->numFields = $numFields;
-
         $this->operationsPerQuery = $operationsPerQuery;
+        $this->debug = $debug;
 
         $query = $this->getQuery($operationsPerQuery);
         $this->preparedStatement = $this->pdo->prepare($query);
@@ -103,27 +115,29 @@ abstract class BulkOperator
     /**
      * Queues an operation.
      *
-     * @param mixed ...$values The values to process.
+     * @param mixed ...$values An associative array containing values to be processed. 
+     *                         Additional keys, not provided in the constructor, will be ignored.
      *
      * @return bool Whether a batch has been synchronized with the database.
      *              This can be used to display progress feedback.
      *
      * @throws \InvalidArgumentException If the number of values does not match the field count.
      */
-    public function queue(...$values) : bool
+    public function queue(array $values) : bool
     {
-        $count = count($values);
-
-        if ($count !== $this->numFields) {
-            throw new \InvalidArgumentException(sprintf(
-                'The number of values (%u) does not match the field count (%u).',
-                $count,
-                $this->numFields
-            ));
+        // Ensure all required fields are present
+        foreach ($this->fields as $field) {
+            if (!array_key_exists($field, $values)) {
+                throw new \InvalidArgumentException(sprintf(
+                    'The value for the field "%s" is missing.',
+                    $field
+                ));
+            }
         }
 
-        foreach ($values as $value) {
-            $this->buffer[] = $value;
+        // Add values in the correct order
+        foreach ($this->fields as $field) {
+            $this->buffer[] = $values[$field];
         }
 
         $this->bufferSize++;
@@ -133,12 +147,18 @@ abstract class BulkOperator
             return false;
         }
 
-        $this->preparedStatement->execute($this->buffer);
-        $this->affectedRows += $this->preparedStatement->rowCount();
+        $query = $this->getQuery($this->operationsPerQuery);
+
+        if ($this->debug) {
+            $this->addQueryToDebug($query, $this->buffer);
+        } else {
+            $this->preparedStatement->execute($this->buffer);
+            $this->affectedRows += $this->preparedStatement->rowCount();
+        }
 
         $this->buffer = [];
         $this->bufferSize = 0;
-
+        
         return true;
     }
 
@@ -160,13 +180,46 @@ abstract class BulkOperator
         }
 
         $query = $this->getQuery($this->bufferSize);
-        $statement = $this->pdo->prepare($query);
-        $statement->execute($this->buffer);
-        $this->affectedRows += $statement->rowCount();
+
+        if ($this->debug) {
+            $this->addQueryToDebug($query, $this->buffer);
+        } else {
+            $statement = $this->pdo->prepare($query);
+            $statement->execute($this->buffer);
+            $this->affectedRows += $statement->rowCount();
+        }
 
         $this->buffer = [];
         $this->bufferSize = 0;
     }
+
+    /**
+     * Adds a query to the debug list with the buffer values.
+     *
+     * @param string $query The query with placeholders.
+     * @param array  $buffer The values to replace placeholders.
+     *
+     * @return void
+     */
+    private function addQueryToDebug(string $query, array $buffer) : void
+    {
+        foreach ($buffer as &$value) {
+            $value = $this->pdo->quote($value);
+        }
+        $query = vsprintf(str_replace('?', '%s', $query), $buffer);
+        $this->debugQueries[] = $query;
+    }
+    
+    /**
+     * Returns the debug queries that have been stored.
+     *
+     * @return string[] The list of debug queries.
+     */
+    public function getDebugQueries() : array
+    {
+        return $this->debugQueries;
+    }
+    
 
     /**
      * Resets the bulk operator.
@@ -181,6 +234,7 @@ abstract class BulkOperator
         $this->bufferSize = 0;
         $this->affectedRows = 0;
         $this->totalOperations = 0;
+        $this->debugQueries = [];
     }
 
     /**
@@ -215,6 +269,25 @@ abstract class BulkOperator
         return $this->bufferSize;
     }
 
+     /**
+     * Shows the currently queued SQL query with the data.
+     *
+     * @return string The currently queued SQL query with the data.
+     */
+    public function showQueuedQuery() : string
+    {
+        if (!$this->bufferSize) return "";
+        
+        $query = $this->getQuery($this->bufferSize);
+        $buffer = $this->buffer;
+        foreach ($buffer as &$value) {
+            // Ensure the value is properly escaped for SQL
+            $value = $this->pdo->quote($value);
+        }
+        $query = vsprintf(str_replace('?', '%s', $query), $buffer);
+        return $query;
+    }
+    
     /**
      * Returns the total number of rows affected by flushed operations.
      *
