@@ -274,7 +274,7 @@ abstract class BulkOperator
      *
      * @return string The currently queued SQL query with the data.
      */
-    public function showQueuedQuery() : string
+    public function getQueuedQuery() : string
     {
         if (!$this->bufferSize) return "";
         
