@@ -204,7 +204,7 @@ abstract class BulkOperator
     private function addQueryToDebug(string $query, array $buffer) : void
     {
         foreach ($buffer as &$value) {
-            $value = $this->pdo->quote($value);
+            $value = $value == null ? "NULL" : $this->pdo->quote($value);
         }
         $query = vsprintf(str_replace('?', '%s', $query), $buffer);
         $this->debugQueries[] = $query;
@@ -281,8 +281,8 @@ abstract class BulkOperator
         $query = $this->getQuery($this->bufferSize);
         $buffer = $this->buffer;
         foreach ($buffer as &$value) {
-            // Ensure the value is properly escaped for SQL
-            $value = $this->pdo->quote($value);
+            // Ensure the value (if not null) is properly escaped for SQL
+            $value = $value == null ? "NULL" : $this->pdo->quote($value);
         }
         $query = vsprintf(str_replace('?', '%s', $query), $buffer);
         return $query;
